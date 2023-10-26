@@ -5,11 +5,24 @@
 #define NUM_THREADS 2
 
 int a = 0;
+// Mutex declaration
+pthread_mutex_t mutex;
 
 // TODO: adaugati mutexul in functia de mai jos
 void *f(void *arg)
 {
+	int r = pthread_mutex_lock(&mutex);
+	if (r) {
+		printf("Lock cannot be done.\n");
+	}
+
+	// Regiune critica
 	a += 2;
+
+	r = pthread_mutex_unlock(&mutex);
+	if (r) {
+		printf("Unlock cannot be done.\n");
+	}
 
 	pthread_exit(NULL);
 }
@@ -20,6 +33,9 @@ int main(int argc, char *argv[])
 	void *status;
 	pthread_t threads[NUM_THREADS];
 	int arguments[NUM_THREADS];
+
+	// Initialize the mutex
+	pthread_mutex_init(&mutex, NULL);
 
 	for (i = 0; i < NUM_THREADS; i++) {
 		arguments[i] = i;
@@ -40,6 +56,8 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	// Clean up the mutex
+	pthread_mutex_destroy(&mutex);
 	printf("a = %d\n", a);
 
 	return 0;
