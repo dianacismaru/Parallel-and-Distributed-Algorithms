@@ -2,27 +2,35 @@
 #include <stdlib.h>
 #include <pthread.h>
 
+#define min(a, b) a > b ? b : a
+
 int N;
 int P;
 int **a;
 int **b;
 int **c;
 
-// TODO: paralelizati operatia din comentariul din functie
-// in interiorul functiei respective
+pthread_mutex_t mutex;
+
 void *thread_function(void *arg)
 {
 	int thread_id = *(int *)arg;
 
-	/*
-	for (i = 0; i < N; i++) {
-		for (j = 0; j < N; j++) {
-			for (k = 0; k < N; k++) {
+	int start = thread_id * (double)N / P;
+    int end = min((thread_id + 1) * (double)N / P, N);
+
+	
+	for (int i = 0; i < N; i++) {
+		for (int j = 0; j < N; j++) {
+			pthread_mutex_lock(&mutex);
+
+			for (int k = start; k < end; k++) {
 				c[i][j] += a[i][k] * b[k][j];
 			}
+
+			pthread_mutex_unlock(&mutex);
 		}
 	}
-	*/
 
 	pthread_exit(NULL);
 }
@@ -98,6 +106,12 @@ int main(int argc, char *argv[])
 	pthread_t tid[P];
 	int thread_id[P];
 
+	int r = pthread_mutex_init(&mutex, NULL);
+	if (r) {
+		printf ("Mutex cannot be initialized.\n");
+		exit(-1);
+	}
+
 	for (i = 0; i < P; i++) {
 		thread_id[i] = i;
 		pthread_create(&tid[i], NULL, thread_function, &thread_id[i]);
@@ -108,6 +122,10 @@ int main(int argc, char *argv[])
 	}
 
 	print(c);
-
+	r = pthread_mutex_destroy(&mutex);
+	if (r) {
+		printf ("Mutex cannot be destroyed.\n");
+		exit(-1);
+	}
 	return 0;
 }

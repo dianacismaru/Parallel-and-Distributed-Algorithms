@@ -1,7 +1,7 @@
 #!/bin/bash
 
 N=1000
-P=2
+P=4
 
 if [ ! -f "multiply_seq" ]
 then
