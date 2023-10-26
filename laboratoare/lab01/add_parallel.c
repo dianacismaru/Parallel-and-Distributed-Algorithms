@@ -1,51 +1,92 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+
+#define min(a, b) a > b ? b : a
 
 /*
-    schelet pentru exercitiul 5
+	schelet pentru exercitiul 5
 */
 
 int *arr;
-int array_size;
-int num_threads;
+
+// array size
+int N;
+
+// number of threads
+int P;
+
+void *f(void *arg) {
+	long id = *(long *)arg;
+
+	int start = id * (double)N / P;
+	int end = min((id + 1) * (double)N / P, N);
+
+	for (int i = start; i < end; i++) {
+		arr[i] += 100;
+	}
+
+	pthread_exit(NULL);
+}
 
 int main(int argc, char *argv[]) {
-  if (argc < 3) {
-    fprintf(stderr, "Specificati dimensiunea array-ului si numarul de thread-uri\n");
-    exit(-1);
-  }
+	if (argc < 2) {
+		fprintf(stderr, "Specificati dimensiunea array-ului\n");
+		exit(-1);
+	}
 
-  array_size = atoi(argv[1]);
-  num_threads = atoi(argv[2]);
+	N = atoi(argv[1]);
+	P = sysconf(_SC_NPROCESSORS_CONF);
 
-  arr = malloc(array_size * sizeof(int));
-  for (int i = 0; i < array_size; i++) {
-    arr[i] = i;
-  }
+	arr = malloc(N * sizeof(int));
+	for (int i = 0; i < N; i++) {
+		arr[i] = i;
+	}
 
-  for (int i = 0; i < array_size; i++) {
-    printf("%d", arr[i]);
-    if (i != array_size - 1) {
-      printf(" ");
-    } else {
-      printf("\n");
-    }
-  }
+	for (int i = 0; i < N; i++) {
+		printf("%d", arr[i]);
+		if (i != N - 1) {
+			printf(" ");
+		} else {
+			printf("\n");
+		}
+	}
 
-  // TODO: aceasta operatie va fi paralelizata cu num_threads fire de executie
-  for (int i = 0; i < array_size; i++) {
-    arr[i] += 100;
-  }
+	pthread_t threads[P];
+	int r;
+	long id;
+	void *status;
+	long ids[P];
+	
+	for (id = 0; id < P; id++) {
+		ids[id] = id;
+		r = pthread_create(&threads[id], NULL, f, &ids[id]);
 
-  for (int i = 0; i < array_size; i++) {
-    printf("%d", arr[i]);
-    if (i != array_size - 1) {
-      printf(" ");
-    } else {
-      printf("\n");
-    }
-  }
+		if (r) {
+			printf("Eroare la crearea thread-ului %ld\n", id);
+			exit(-1);
+		}
+	}
 
-  return 0;
+	for (id = 0; id < P; id++) {
+		r = pthread_join(threads[id], &status);
+
+		if (r) {
+			printf("Eroare la asteptarea thread-ului %ld\n", id);
+			exit(-1);
+		}
+	}
+
+	// Print the final array
+	for (int i = 0; i < N; i++) {
+		printf("%d", arr[i]);
+		if (i != N - 1) {
+			printf(" ");
+		} else {
+			printf("\n");
+		}
+	}
+
+	return 0;
 }
