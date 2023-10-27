@@ -3,6 +3,11 @@
 #include <pthread.h>
 #include <math.h>
 
+#define swap(a, b) a ^= b ^= a ^= b
+#define min(a, b) a > b ? b : a
+
+pthread_barrier_t barrier;
+
 int N;
 int P;
 int *v;
@@ -79,7 +84,32 @@ void *thread_function(void *arg)
 {
 	int thread_id = *(int *)arg;
 
-	// TODO: implementati aici OETS paralel
+	int start = thread_id * (double)N / P;
+	int end = min((thread_id + 1) * (double)N / P, N - 1);
+
+	int even_start = start;
+	int odd_start = start + 1;
+	if (start % 2) {
+		swap(even_start, odd_start);
+	}
+
+	for (int k = 0; k < N; k++) {
+		for (int i = even_start; i < end; i += 2) {
+			if (v[i] > v[i + 1]) {
+				swap(v[i], v[i + 1]);
+			}
+		}
+
+		pthread_barrier_wait(&barrier);
+
+		for (int i = odd_start; i < end; i += 2) {
+			if (v[i] > v[i + 1]) {
+				swap(v[i], v[i + 1]);
+			}
+		}
+
+		pthread_barrier_wait(&barrier);
+	}
 
 	pthread_exit(NULL);
 }
@@ -98,6 +128,11 @@ int main(int argc, char *argv[])
 		vQSort[i] = v[i];
 	qsort(vQSort, N, sizeof(int), cmp);
 
+	int r = pthread_barrier_init(&barrier, NULL, P);
+	if (r) {
+		printf("The barrier cannot be initialized.\n");
+	}
+
 	// se creeaza thread-urile
 	for (i = 0; i < P; i++) {
 		thread_id[i] = i;
@@ -110,20 +145,24 @@ int main(int argc, char *argv[])
 	}
 
 	// bubble sort clasic - trebuie transformat in OETS si paralelizat
-	int sorted = 0;
-	while (!sorted) {
-		sorted = 1;
+	// int sorted = 0;
+	// while (!sorted) {
+	// 	sorted = 1;
 
-		for (i = 0; i < N-1; i++) {
-			if(v[i] > v[i + 1]) {
-				aux = v[i];
-				v[i] = v[i + 1];
-				v[i + 1] = aux;
-				sorted = 0;
-			}
-		}
+	// 	for (i = 0; i < N-1; i++) {
+	// 		if(v[i] > v[i + 1]) {
+	// 			aux = v[i];
+	// 			v[i] = v[i + 1];
+	// 			v[i + 1] = aux;
+	// 			sorted = 0;
+	// 		}
+	// 	}
+	// }
+
+	r = pthread_barrier_destroy(&barrier);
+	if (r) {
+		printf("The barrier cannot be destroyed.\n");
 	}
-
 	// se afiseaza vectorul etalon
 	// se afiseaza vectorul curent
 	// se compara cele doua
