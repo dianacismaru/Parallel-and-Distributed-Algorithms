@@ -16,18 +16,20 @@
 
 #define CLAMP(v, min, max) if(v < min) { v = min; } else if(v > max) { v = max; }
 
+// Find the minimum out of two numbers
 #define min(a, b) a < b ? a : b
 
+// Structure used to pass data to the thread function
 typedef struct {
-	int id;
-	ppm_image* image;
+	int id;						// Thread identifier		
+	int num_threads;			// Total number of threads
+	pthread_barrier_t* barrier; // Synchronization barrier for threads
+	ppm_image* image;			// Pointer to the original image
 	ppm_image* scaled_image;
 	ppm_image** contour_map;
 	unsigned char** grid;
 	int step_x;
 	int step_y;
-	int num_threads;
-	pthread_barrier_t* barrier;
 } ThreadData;
 
 // Creates a map between the binary configuration (e.g. 0110_2) and the corresponding pixels
@@ -68,16 +70,18 @@ void update_image(ppm_image *image, ppm_image *contour, int x, int y) {
 // Builds a p x q grid of points with values which can be either 0 or 1, depending on how the
 // pixel values compare to the `sigma` reference value. The points are taken at equal distances
 // in the original image, based on the `step_x` and `step_y` arguments.
-unsigned char **sample_grid(int step_x, int step_y,
-							unsigned char sigma, ThreadData* data) {
+unsigned char **sample_grid(unsigned char sigma, ThreadData* data) {
 	ppm_image *image = data->scaled_image;
+	int step_x = data->step_x;
+	int step_y = data->step_y;
 	int p = image->x / step_x;
 	int q = image->y / step_y;
 
-	int start = data->id * (double)p / data->num_threads;
-	int end = min((data->id + 1) * (double)p / data->num_threads, p);
+	// Compute the [start, end) section that the thread will work on
+	int start_i = data->id * (double)p / data->num_threads;
+	int end_i = min((data->id + 1) * (double)p / data->num_threads, p);
 
-	for (int i = start; i < end; i++) {
+	for (int i = start_i; i < end_i; i++) {
 		for (int j = 0; j < q; j++) {
 			ppm_pixel curr_pixel = image->data[i * step_x * image->y + j * step_y];
 
@@ -92,9 +96,9 @@ unsigned char **sample_grid(int step_x, int step_y,
 	}
 	data->grid[p][q] = 0;
 
-	// last sample points have no neighbors below / to the right, so we use pixels on the
+	// Last sample points have no neighbors below / to the right, so we use pixels on the
 	// last row / column of the input image for them
-	for (int i = start; i < end; i++) {
+	for (int i = start_i; i < end_i; i++) {
 		ppm_pixel curr_pixel = image->data[i * step_x * image->y + image->x - 1];
 
 		unsigned char curr_color = (curr_pixel.red + curr_pixel.green + curr_pixel.blue) / 3;
@@ -106,13 +110,11 @@ unsigned char **sample_grid(int step_x, int step_y,
 		}
 	}
 
-	// bariera
-	pthread_barrier_wait(data->barrier);
+	// Compute the [start, end) section that the thread will work on
+	int start_j = data->id * (double)q / data->num_threads;
+	int end_j = min((data->id + 1) * (double)q / data->num_threads, q);
 
-	int startq = data->id * (double)q / data->num_threads;
-	int endq = min((data->id + 1) * (double)q / data->num_threads, q);
-
-	for (int j = startq; j < endq; j++) {
+	for (int j = start_j; j < end_j; j++) {
 		ppm_pixel curr_pixel = image->data[(image->x - 1) * image->y + j * step_y];
 
 		unsigned char curr_color = (curr_pixel.red + curr_pixel.green + curr_pixel.blue) / 3;
@@ -136,19 +138,52 @@ void march(ppm_image *image, unsigned char **grid, ppm_image **contour_map,
 	int p = image->x / data->step_x;
 	int q = image->y / data->step_y;
 
-	int start = data->id * (double)p / data->num_threads;
-	int end = min((data->id + 1) * (double)p / data->num_threads, p);
+	// Compute the [start, end) section that the thread will work on
+	int start_i = data->id * (double)p / data->num_threads;
+	int end_i = min((data->id + 1) * (double)p / data->num_threads, p);
 
-	for (int i = start; i < end; i++) {
+	for (int i = start_i; i < end_i; i++) {
 		for (int j = 0; j < q; j++) {
-			unsigned char k = 8 * grid[i][j] + 4 * grid[i][j + 1] + 2 * grid[i + 1][j + 1] + 1 * grid[i + 1][j];
+			unsigned char k = 8 * grid[i][j] + 4 * grid[i][j + 1] + 
+							  2 * grid[i + 1][j + 1] + 1 * grid[i + 1][j];
 			update_image(image, contour_map[k], i * data->step_x, j * data->step_y);
 		}
 	}
 }
 
+// Rescale the original image to 2048x2048 using bicubic interpolation
+ppm_image *rescale_image(ThreadData* data) {
+	uint8_t sample[3];
+
+	// We only rescale downwards
+	if (data->image->x <= RESCALE_X && data->image->y <= RESCALE_Y) {
+		return data->image;
+	}
+
+	// Compute the [start, end) section that the thread will work on
+	int start_i = data->id * (double)data->scaled_image->x / data->num_threads;
+    int end_i = min((data->id + 1) * (double)data->scaled_image->x / data->num_threads,
+				     data->scaled_image->x);
+
+	// Use bicubic interpolation for scaling
+	for (int i = start_i; i < end_i; i++) {
+		for (int j = 0; j < data->scaled_image->y; j++) {
+			float u = (float)i / (float)(data->scaled_image->x - 1);
+			float v = (float)j / (float)(data->scaled_image->y - 1);
+			sample_bicubic(data->image, u, v, sample);
+
+			data->scaled_image->data[i * data->scaled_image->y + j].red = sample[0];
+			data->scaled_image->data[i * data->scaled_image->y + j].green = sample[1];
+			data->scaled_image->data[i * data->scaled_image->y + j].blue = sample[2];
+		}
+	}
+
+	return data->scaled_image;
+}
+
 // Calls `free` method on the utilized resources.
-void free_resources(ppm_image *image, ppm_image **contour_map, unsigned char **grid, int step_x) {
+void free_resources(ppm_image *image, ppm_image **contour_map, unsigned char **grid,
+					int step_x) {
 	for (int i = 0; i < CONTOUR_CONFIG_COUNT; i++) {
 		free(contour_map[i]->data);
 		free(contour_map[i]);
@@ -164,44 +199,23 @@ void free_resources(ppm_image *image, ppm_image **contour_map, unsigned char **g
 	free(image);
 }
 
-ppm_image *rescale_image(ThreadData* data) {
-	uint8_t sample[3];
-
-	// we only rescale downwards
-	if (data->image->x <= RESCALE_X && data->image->y <= RESCALE_Y) {
-		return data->image;
-	}
-
-	int start = data->id * (double)data->scaled_image->x / data->num_threads;
-    int end = min((data->id + 1) * (double)data->scaled_image->x / data->num_threads, data->scaled_image->x);
-
-	// use bicubic interpolation for scaling
-	for (int i = start; i < end; i++) {
-		for (int j = 0; j < data->scaled_image->y; j++) {
-			float u = (float)i / (float)(data->scaled_image->x - 1);
-			float v = (float)j / (float)(data->scaled_image->y - 1);
-			sample_bicubic(data->image, u, v, sample);
-
-			data->scaled_image->data[i * data->scaled_image->y + j].red = sample[0];
-			data->scaled_image->data[i * data->scaled_image->y + j].green = sample[1];
-			data->scaled_image->data[i * data->scaled_image->y + j].blue = sample[2];
-		}
-	}
-
-	return data->scaled_image;
-}
-
-void* marching_squares(void* arg) {
+// Function that will be executed by each thread
+void* parallel_marching_squares(void* arg) {
 	ThreadData* data = (ThreadData*)arg;
-	
+
+	// Rescale the original image
 	data->scaled_image = rescale_image(data);
 
+	// Wait for all threads to complete this stage before continuing
 	pthread_barrier_wait(data->barrier);
 
-	data->grid = sample_grid(data->step_x, data->step_y, SIGMA, data);
+	// Compute the grid for the scaled image
+	data->grid = sample_grid(SIGMA, data);
 
+	// Wait for all threads to complete this stage before continuing
 	pthread_barrier_wait(data->barrier);
 
+	// Create the contour image
 	march(data->scaled_image, data->grid, data->contour_map, data);
 
 	return NULL;
@@ -219,17 +233,23 @@ int main(int argc, char *argv[]) {
 
 	ppm_image **contour_map = init_contour_map();
 
+	// Get the threads number
 	int num_threads = *argv[3] - 48;
+
+	// Create an array of threads
 	pthread_t threads[num_threads];
+
+	// Create an array of data that each thread will use
 	ThreadData thread_data[num_threads];
 
+	// Initialize a synchronization barrier that each thread will use
 	pthread_barrier_t barrier;
 	int r = pthread_barrier_init(&barrier, NULL, num_threads);
 	if (r) {
 		printf("The barrier cannot be initialized.\n");
 	}
 
-	// alloc memory for image
+	// Alloc memory for the new image
 	ppm_image *scaled_image = (ppm_image *)malloc(sizeof(ppm_image));
 	if (!scaled_image) {
 		fprintf(stderr, "Unable to allocate memory\n");
@@ -248,6 +268,7 @@ int main(int argc, char *argv[]) {
 	int p = image->x / step_x;
 	int q = image->y / step_y;
 
+	// Alloc memory for the grid
 	unsigned char **grid = (unsigned char **)malloc((p + 1) * sizeof(unsigned char*));
 	if (!grid) {
 		fprintf(stderr, "Unable to allocate memory\n");
@@ -262,6 +283,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	// Create the threads that will parallelize the marching squares algorithm
 	for (int i = 0; i < num_threads; i++) {
 		thread_data[i].id = i;
 		thread_data[i].image = image;
@@ -273,25 +295,24 @@ int main(int argc, char *argv[]) {
 		thread_data[i].contour_map = contour_map;
 		thread_data[i].barrier = &barrier;
 
-		pthread_create(&threads[i], NULL, marching_squares, &thread_data[i]);
+		pthread_create(&threads[i], NULL, parallel_marching_squares, &thread_data[i]);
 	}
 
+	// Join the threads
 	for (int i = 0; i < num_threads; i++) {
 		pthread_join(threads[i], NULL);
 	}
 
-	// free(thread_data[num_threads-1].image);
-	// free(thread_data[num_threads-1].image->data);
+	// Write the computed image to the output file
+	write_ppm(thread_data[num_threads - 1].scaled_image, argv[2]);
+
+	// Free the resources
+	free_resources(thread_data[num_threads - 1].scaled_image, contour_map, grid, step_x);
 
 	r = pthread_barrier_destroy(&barrier);
 	if (r) {
 		printf("The barrier cannot be destroyed.\n");
 	}
-
-	// 4. Write output
-	write_ppm(thread_data[num_threads-1].scaled_image, argv[2]);
-
-	// free_resources(scaled_image, contour_map, grid, step_x);
 
 	return 0;
 }
