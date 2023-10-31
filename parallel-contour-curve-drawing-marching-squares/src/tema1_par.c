@@ -68,11 +68,14 @@ void update_image(ppm_image *image, ppm_image *contour, int x, int y) {
 // Builds a p x q grid of points with values which can be either 0 or 1, depending on how the
 // pixel values compare to the `sigma` reference value. The points are taken at equal distances
 // in the original image, based on the `step_x` and `step_y` arguments.
-unsigned char **sample_grid(ppm_image *image, int step_x, int step_y,
-							unsigned char sigma, int start, int end,
-							unsigned char **grid) {
+unsigned char **sample_grid(int step_x, int step_y,
+							unsigned char sigma, ThreadData* data) {
+	ppm_image *image = data->scaled_image;
 	int p = image->x / step_x;
 	int q = image->y / step_y;
+
+	int start = data->id * (double)p / data->num_threads;
+	int end = min((data->id + 1) * (double)p / data->num_threads, p);
 
 	for (int i = start; i < end; i++) {
 		for (int j = 0; j < q; j++) {
@@ -81,13 +84,13 @@ unsigned char **sample_grid(ppm_image *image, int step_x, int step_y,
 			unsigned char curr_color = (curr_pixel.red + curr_pixel.green + curr_pixel.blue) / 3;
 
 			if (curr_color > sigma) {
-				grid[i][j] = 0;
+				data->grid[i][j] = 0;
 			} else {
-				grid[i][j] = 1;
+				data->grid[i][j] = 1;
 			}
 		}
 	}
-	grid[p][q] = 0;
+	data->grid[p][q] = 0;
 
 	// last sample points have no neighbors below / to the right, so we use pixels on the
 	// last row / column of the input image for them
@@ -97,25 +100,31 @@ unsigned char **sample_grid(ppm_image *image, int step_x, int step_y,
 		unsigned char curr_color = (curr_pixel.red + curr_pixel.green + curr_pixel.blue) / 3;
 
 		if (curr_color > sigma) {
-			grid[i][q] = 0;
+			data->grid[i][q] = 0;
 		} else {
-			grid[i][q] = 1;
+			data->grid[i][q] = 1;
 		}
 	}
 
-	for (int j = 0; j < q; j++) {
+	// bariera
+	pthread_barrier_wait(data->barrier);
+
+	int startq = data->id * (double)q / data->num_threads;
+	int endq = min((data->id + 1) * (double)q / data->num_threads, q);
+
+	for (int j = startq; j < endq; j++) {
 		ppm_pixel curr_pixel = image->data[(image->x - 1) * image->y + j * step_y];
 
 		unsigned char curr_color = (curr_pixel.red + curr_pixel.green + curr_pixel.blue) / 3;
 
 		if (curr_color > sigma) {
-			grid[p][j] = 0;
+			data->grid[p][j] = 0;
 		} else {
-			grid[p][j] = 1;
+			data->grid[p][j] = 1;
 		}
 	}
 
-	return grid;
+	return data->grid;
 }
 
 // Corresponds to step 2 of the marching squares algorithm, which focuses on identifying the
@@ -123,13 +132,17 @@ unsigned char **sample_grid(ppm_image *image, int step_x, int step_y,
 // sample fragment of the original image and replaces the pixels in the original image with
 // the pixels of the corresponding contour image accordingly.
 void march(ppm_image *image, unsigned char **grid, ppm_image **contour_map,
-		   int step_x, int step_y, int start, int end) {
-	int q = image->y / step_y;
+		   ThreadData* data) {
+	int p = image->x / data->step_x;
+	int q = image->y / data->step_y;
+
+	int start = data->id * (double)p / data->num_threads;
+	int end = min((data->id + 1) * (double)p / data->num_threads, p);
 
 	for (int i = start; i < end; i++) {
 		for (int j = 0; j < q; j++) {
 			unsigned char k = 8 * grid[i][j] + 4 * grid[i][j + 1] + 2 * grid[i + 1][j + 1] + 1 * grid[i + 1][j];
-			update_image(image, contour_map[k], i * step_x, j * step_y);
+			update_image(image, contour_map[k], i * data->step_x, j * data->step_y);
 		}
 	}
 }
@@ -151,51 +164,45 @@ void free_resources(ppm_image *image, ppm_image **contour_map, unsigned char **g
 	free(image);
 }
 
-ppm_image *rescale_image(ppm_image *image, ppm_image *scaled_image, int thread_id, int num_threads) {
+ppm_image *rescale_image(ThreadData* data) {
 	uint8_t sample[3];
 
 	// we only rescale downwards
-	if (image->x <= RESCALE_X && image->y <= RESCALE_Y) {
-		return image;
+	if (data->image->x <= RESCALE_X && data->image->y <= RESCALE_Y) {
+		return data->image;
 	}
 
-	int start = thread_id * (double)scaled_image->x / num_threads;
-    int end = min((thread_id + 1) * (double)scaled_image->x / num_threads, scaled_image->x);
+	int start = data->id * (double)data->scaled_image->x / data->num_threads;
+    int end = min((data->id + 1) * (double)data->scaled_image->x / data->num_threads, data->scaled_image->x);
 
 	// use bicubic interpolation for scaling
 	for (int i = start; i < end; i++) {
-		for (int j = 0; j < scaled_image->y; j++) {
-			float u = (float)i / (float)(scaled_image->x - 1);
-			float v = (float)j / (float)(scaled_image->y - 1);
-			sample_bicubic(image, u, v, sample);
+		for (int j = 0; j < data->scaled_image->y; j++) {
+			float u = (float)i / (float)(data->scaled_image->x - 1);
+			float v = (float)j / (float)(data->scaled_image->y - 1);
+			sample_bicubic(data->image, u, v, sample);
 
-			scaled_image->data[i * scaled_image->y + j].red = sample[0];
-			scaled_image->data[i * scaled_image->y + j].green = sample[1];
-			scaled_image->data[i * scaled_image->y + j].blue = sample[2];
+			data->scaled_image->data[i * data->scaled_image->y + j].red = sample[0];
+			data->scaled_image->data[i * data->scaled_image->y + j].green = sample[1];
+			data->scaled_image->data[i * data->scaled_image->y + j].blue = sample[2];
 		}
 	}
 
-	return scaled_image;
+	return data->scaled_image;
 }
 
 void* marching_squares(void* arg) {
 	ThreadData* data = (ThreadData*)arg;
-	int num_threads = data->num_threads;
-
-	data->scaled_image = rescale_image(data->image, data->scaled_image, data->id, num_threads);
-
-	pthread_barrier_wait(data->barrier);
-
-	int p = data->image->x / data->step_x;
-	int start = data->id * (double)p / num_threads;
-	int end = min((data->id + 1) * (double)p / num_threads, p);
-
-	data->grid = sample_grid(data->scaled_image, data->step_x, data->step_y, SIGMA, start, end, data->grid);
+	
+	data->scaled_image = rescale_image(data);
 
 	pthread_barrier_wait(data->barrier);
 
-	march(data->scaled_image, data->grid, data->contour_map, data->step_x,
-		  data->step_y, start, end);
+	data->grid = sample_grid(data->step_x, data->step_y, SIGMA, data);
+
+	pthread_barrier_wait(data->barrier);
+
+	march(data->scaled_image, data->grid, data->contour_map, data);
 
 	return NULL;
 }
@@ -273,8 +280,8 @@ int main(int argc, char *argv[]) {
 		pthread_join(threads[i], NULL);
 	}
 
-	// free(image);
-	// free(image->data);
+	// free(thread_data[num_threads-1].image);
+	// free(thread_data[num_threads-1].image->data);
 
 	r = pthread_barrier_destroy(&barrier);
 	if (r) {
