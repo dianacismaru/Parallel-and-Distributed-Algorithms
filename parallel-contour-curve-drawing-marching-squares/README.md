@@ -1,7 +1,7 @@
 *Copyright (C) 2023 Cismaru Diana-Iuliana (331CA - 2023/2024)*
 
-# Parallel Contour Curve Drawing of Marching Square Algorithm
-# Homeword #1 Parallel and Distributed Algorithms
+# Parallel Contour Curve Drawing of Marching Squares Algorithm
+# Homework #1 Parallel and Distributed Algorithms
 
 ## Table of Contents
 1. [Description of the Project](#1-description-of-the-project)
@@ -22,7 +22,7 @@ perform parallel computations. The parallel sections are delimited by using the
 `start` and `end` variables, where:
 
     start = thread_id * (double)array_size / num_threads
-    end = min((thread_id + 1) * (double)array_size / num_threads, array_size);
+    end = min((thread_id + 1) * (double)array_size / num_threads, array_size)
 
 ## 2. Thread Arguments
 
