@@ -162,8 +162,8 @@ ppm_image *rescale_image(ThreadData* data) {
 
 	// Compute the [start, end) section that the thread will work on
 	int start_i = data->id * (double)data->scaled_image->x / data->num_threads;
-    int end_i = min((data->id + 1) * (double)data->scaled_image->x / data->num_threads,
-				     data->scaled_image->x);
+	int end_i = min((data->id + 1) * (double)data->scaled_image->x / data->num_threads,
+					 data->scaled_image->x);
 
 	// Use bicubic interpolation for scaling
 	for (int i = start_i; i < end_i; i++) {
@@ -179,24 +179,6 @@ ppm_image *rescale_image(ThreadData* data) {
 	}
 
 	return data->scaled_image;
-}
-
-// Calls `free` method on the utilized resources.
-void free_resources(ppm_image *image, ppm_image **contour_map, unsigned char **grid,
-					int step_x) {
-	for (int i = 0; i < CONTOUR_CONFIG_COUNT; i++) {
-		free(contour_map[i]->data);
-		free(contour_map[i]);
-	}
-	free(contour_map);
-
-	for (int i = 0; i <= image->x / step_x; i++) {
-		free(grid[i]);
-	}
-	free(grid);
-
-	free(image->data);
-	free(image);
 }
 
 // Function that will be executed by each thread
@@ -217,9 +199,31 @@ void* parallel_marching_squares(void* arg) {
 
 	// Create the contour image
 	march(data->scaled_image, data->grid, data->contour_map, data);
+	pthread_barrier_wait(data->barrier);
 
 	return NULL;
 }
+
+// Calls `free` method on the utilized resources
+void free_resources(ppm_image **image, ppm_image ***contour_map, unsigned char ***grid, int step_x, ppm_image **scaled_image) {
+    free((*scaled_image)->data);
+    free(*scaled_image);
+
+    for (int i = 0; i < CONTOUR_CONFIG_COUNT; i++) {
+        free((*contour_map)[i]->data);
+        free((*contour_map)[i]);
+    }
+    free(*contour_map);
+
+    for (int i = 0; i <= (*image)->x / step_x; i++) {
+        free((*grid)[i]);
+    }
+    free(*grid);
+
+    free((*image)->data);
+    free(*image);
+}
+
 
 int main(int argc, char *argv[]) {
 	if (argc < 4) {
@@ -260,7 +264,7 @@ int main(int argc, char *argv[]) {
 	scaled_image->y = RESCALE_Y;
 
 	scaled_image->data = (ppm_pixel *)malloc(scaled_image->x * scaled_image->y * sizeof(ppm_pixel));
-	if (!scaled_image) {
+	if (!scaled_image->data) {
 		fprintf(stderr, "Unable to allocate memory\n");
 		exit(1);
 	}
@@ -307,7 +311,7 @@ int main(int argc, char *argv[]) {
 	write_ppm(thread_data[num_threads - 1].scaled_image, argv[2]);
 
 	// Free the resources
-	free_resources(thread_data[num_threads - 1].scaled_image, contour_map, grid, step_x);
+	free_resources(&image, &contour_map, &grid, step_x, &scaled_image);
 
 	r = pthread_barrier_destroy(&barrier);
 	if (r) {
